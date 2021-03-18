@@ -7,15 +7,23 @@ import requests
 import re
 import pandas as pd
 
+STUDENT_CSV = '/Users/vmasrani/dev/phd/teaching/553/grading/students.csv'
+
 def pmap(f, arr, n_jobs=-1, prefer='threads', verbose=10):
     return Parallel(n_jobs=n_jobs, prefer=prefer, verbose=verbose)(delayed(f)(i) for i in arr)
 
 
 def get_grade_map_for_question(question_id: str, rubric: pd.DataFrame):
-    return (pd
+    grade_map =  (pd
      .DataFrame(rubric['ratings'].loc[question_id])
      .set_index('description')['points']
     ).to_dict()
+
+    # let zeros and A+ pass through
+    grade_map[0] = 0
+    grade_map["A+"] = rubric.loc[question_id, 'points']
+
+    return grade_map
 
 def get_perfect(submissions: list, rubric: pd.DataFrame):
     full_points = {i:"A+" for i in rubric.index}
@@ -23,7 +31,7 @@ def get_perfect(submissions: list, rubric: pd.DataFrame):
 
 
 def get_user_sheet(course):
-    students = pd.read_csv('https://raw.github.ubc.ca/MDS-2020-21/GitHubLMS/master/data/students2020.csv?token=AAAALVOS3RY7VVM327V7YHC7P72WI')
+    students = pd.read_csv(STUDENT_CSV)
     users = course.get_users()
     df = (pd
           .DataFrame([(user.sis_user_id, user.id) for user in users], columns=['student_number', "canvas_number"])
@@ -73,10 +81,11 @@ def get_course_assignment(course: int, assignment: int):
     return course, assignment, rubric, valid_submissions, invalid_submission
 
 
-def get_pre_grades(course, rubric, valid_submissions):
-    autograde_rubric_id = rubric[rubric.description == "Autograded Exercises"].index.tolist()
+def get_pre_grades(course, rubric, valid_submissions, autograde=False):
     scores = get_perfect(valid_submissions, rubric)
-    scores[autograde_rubric_id] = autograde(valid_submissions, autograde_rubric_id)
+    if autograde:
+        autograde_rubric_id = rubric[rubric.description == "Autograded Exercises"].index.tolist()
+        scores[autograde_rubric_id] = autograde(valid_submissions, autograde_rubric_id)
     students = get_user_sheet(course)
     comments = scores.copy().applymap(lambda x: '')
     return scores, students, comments
@@ -87,9 +96,11 @@ def upload(submissions: list,
            rubric: pd.DataFrame):
 
     def _get_rubric_assessment(sid: int):
-        return {qid:{"points":points.loc[sid, qid], "comments":comments.loc[sid, qid]} for qid in scores.columns}
+        return {qid:{"points":points.loc[sid, qid],
+                     "comments":comments.loc[sid, qid]} for qid in scores.columns}
 
     def _letters_to_points(question: pd.Series):
+
         grade_map = get_grade_map_for_question(question.name, rubric)
         return question.astype(str).replace(grade_map).astype(float)
 
@@ -102,3 +113,12 @@ def upload(submissions: list,
         sub.edit(rubric_assessment=rubric)
         pprint(rubric)
         print("===========================")
+
+
+if __name__ == "__main__":
+    course, assignment, rubric, valid_submissions, invalid_submission = get_course_assignment(59085, 826521)
+    scores, students, comments = get_pre_grades(course, rubric, valid_submissions)
+
+    # uploads all A+, scores can be overwritten with student-specific grades
+    upload(valid_submissions, scores, comments, rubric)
+
